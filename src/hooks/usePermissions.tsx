@@ -1,177 +1,54 @@
 
 import { useAuth } from '@/contexts/AuthContext';
-import { useEffect, useState, useCallback } from 'react';
-import { supabase } from '@/integrations/supabase/client';
+import { useEffect, useState } from 'react';
 import { DetailedRole } from '@/components/auth/RoleSelector';
+import { Permission, PermissionHookReturn } from './permissions/types';
+import { checkPermission, checkAnyPermission, checkAllPermissions, determineUserRole } from './permissions/utils';
+import { useRoleFetcher } from './permissions/useRoleFetcher';
 
-export type UserRole = 'admin' | 'user' | 'moderator' | 'editor';
+export type { UserRole, Permission } from './permissions/types';
 
-export interface Permission {
-  resource: string;
-  action: string;
-}
-
-const DETAILED_ROLE_PERMISSIONS: Record<DetailedRole, Permission[]> = {
-  admin: [
-    { resource: 'news', action: 'create' },
-    { resource: 'news', action: 'edit' },
-    { resource: 'news', action: 'delete' },
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'create' },
-    { resource: 'events', action: 'edit' },
-    { resource: 'events', action: 'delete' },
-    { resource: 'events', action: 'view' },
-    { resource: 'users', action: 'create' },
-    { resource: 'users', action: 'edit' },
-    { resource: 'users', action: 'delete' },
-    { resource: 'users', action: 'view' },
-    { resource: 'dashboard', action: 'view' },
-    { resource: 'settings', action: 'edit' },
-  ],
-  editor: [
-    { resource: 'news', action: 'create' },
-    { resource: 'news', action: 'edit' },
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'create' },
-    { resource: 'events', action: 'edit' },
-    { resource: 'events', action: 'view' },
-    { resource: 'dashboard', action: 'view' },
-  ],
-  moderator: [
-    { resource: 'news', action: 'edit' },
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'edit' },
-    { resource: 'events', action: 'view' },
-    { resource: 'dashboard', action: 'view' },
-  ],
-  treinador: [
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'view' },
-    { resource: 'dashboard', action: 'view' },
-    { resource: 'teams', action: 'edit' },
-    { resource: 'players', action: 'edit' },
-  ],
-  arbitro: [
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'view' },
-    { resource: 'dashboard', action: 'view' },
-    { resource: 'games', action: 'edit' },
-    { resource: 'referees', action: 'view' },
-  ],
-  dirigente: [
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'view' },
-    { resource: 'dashboard', action: 'view' },
-    { resource: 'clubs', action: 'edit' },
-    { resource: 'teams', action: 'view' },
-  ],
-  jornalista: [
-    { resource: 'news', action: 'create' },
-    { resource: 'news', action: 'edit' },
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'view' },
-    { resource: 'dashboard', action: 'view' },
-  ],
-  user: [
-    { resource: 'news', action: 'view' },
-    { resource: 'events', action: 'view' },
-  ],
-};
-
-export const usePermissions = () => {
+export const usePermissions = (): PermissionHookReturn => {
   const { user, isAdmin } = useAuth();
   const [userRole, setUserRole] = useState<DetailedRole>('user');
-  const [isLoading, setIsLoading] = useState(false);
+  const { fetchUserRole, isLoading } = useRoleFetcher();
 
-  const fetchUserRole = useCallback(async () => {
-    if (!user || isLoading) {
-      return;
-    }
-
-    setIsLoading(true);
-    
-    try {
-      // Quick check by email first
-      if (user.email === 'admin@fcbb.cv') {
-        console.log('Admin role detected by email');
-        setUserRole('admin');
-        return;
-      }
-
-      // Try to fetch from database with error handling
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-
-      if (!error && data && data.role) {
-        console.log('Role from database:', data.role);
-        setUserRole(data.role as DetailedRole);
-      } else {
-        console.log('Using fallback role determination');
-        // Fallback logic
-        if (user.email === 'admin@fcbb.cv' || isAdmin) {
-          setUserRole('admin');
-        } else {
-          setUserRole('user');
-        }
-      }
-    } catch (error: any) {
-      console.error('Error fetching user role:', error);
-      // Fallback logic
-      if (user.email === 'admin@fcbb.cv' || isAdmin) {
-        setUserRole('admin');
+  useEffect(() => {
+    const loadUserRole = async () => {
+      if (user) {
+        const role = await fetchUserRole(user, isAdmin);
+        setUserRole(role);
       } else {
         setUserRole('user');
       }
-    } finally {
-      setIsLoading(false);
-    }
-  }, [user, isAdmin, isLoading]);
+    };
 
-  useEffect(() => {
-    if (user) {
-      fetchUserRole();
-    } else {
-      setUserRole('user');
-    }
-  }, [user, fetchUserRole]);
+    loadUserRole();
+  }, [user, isAdmin, fetchUserRole]);
 
   const getUserRole = (): DetailedRole => {
-    // Use multiple fallback strategies
-    if (user?.email === 'admin@fcbb.cv' || isAdmin) {
-      return 'admin';
-    }
-    return userRole;
+    return determineUserRole(user, isAdmin, userRole);
   };
 
   const hasPermission = (resource: string, action: string): boolean => {
     if (!user) return false;
     
     const currentRole = getUserRole();
-    console.log('Checking permission:', { resource, action, currentRole, userEmail: user.email });
-    
-    const permissions = DETAILED_ROLE_PERMISSIONS[currentRole] || [];
-    
-    const hasAccess = permissions.some(
-      permission => permission.resource === resource && permission.action === action
-    );
-    
-    console.log('Permission granted:', hasAccess);
-    return hasAccess;
+    return checkPermission(currentRole, resource, action, user.email);
   };
 
   const hasAnyPermission = (permissions: Permission[]): boolean => {
-    return permissions.some(permission => 
-      hasPermission(permission.resource, permission.action)
-    );
+    if (!user) return false;
+    
+    const currentRole = getUserRole();
+    return checkAnyPermission(currentRole, permissions, user.email);
   };
 
   const hasAllPermissions = (permissions: Permission[]): boolean => {
-    return permissions.every(permission => 
-      hasPermission(permission.resource, permission.action)
-    );
+    if (!user) return false;
+    
+    const currentRole = getUserRole();
+    return checkAllPermissions(currentRole, permissions, user.email);
   };
 
   const canAccessAdminArea = (): boolean => {
